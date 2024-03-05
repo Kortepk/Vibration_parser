@@ -46,7 +46,7 @@ struct MPU6050_t
     double Gy;
     double Gz;*/
 
-    //float Temperature;
+    float Temperature;
 } DataStruct_MPU6050;
 
 /* USER CODE END PTD */
@@ -61,11 +61,14 @@ struct MPU6050_t
 #define PWR_MGMT_1_REG 0x6B
 #define SMPLRT_DIV_REG 0x19
 #define ACCEL_CONFIG_REG 0x1C
+
+#define FIFO_ENABLE_REG 0x23
+
 #define ACCEL_XOUT_H_REG 0x3B
 #define INT_PIN_REG 0x37
 #define INT_ENABLE_REG 0x38
 #define INT_STATUS_REG 0x3A
-//#define TEMP_OUT_H_REG 0x41
+#define TEMP_OUT_H_REG 0x41
 //#define GYRO_CONFIG_REG 0x1B
 //#define GYRO_XOUT_H_REG 0x43
 
@@ -83,7 +86,7 @@ I2C_HandleTypeDef hi2c2;
 uint8_t MainUsbTxBuffer[TX_USB_DATA_SIZE];
 
 uint8_t regData = 0;
-uint32_t i2c_timeout = 100;
+uint32_t i2c_timeout = 100, Main_Delay = 5;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -150,13 +153,19 @@ int main(void)
 	{
 		HAL_GPIO_TogglePin(BLUE_LED_GPIO_Port, BLUE_LED_Pin);
 		time = HAL_GetTick() + 500;
-		MPU6050_Read_All();
 	}
-	sz = sprintf((char *)&MainUsbTxBuffer, "%u", val++);
+	MPU6050_Read_All();
+
+
+	sz = sprintf((char *)&MainUsbTxBuffer, "X=%6.3f Y=%6.3f Z=%6.3f",
+			DataStruct_MPU6050.Ax,
+			DataStruct_MPU6050.Ay,
+			DataStruct_MPU6050.Az);
+
 	MainUsbTxBuffer[sz] = '\n';
 	sz +=2;
 	CDC_Transmit_FS(&MainUsbTxBuffer[0], sz);
-	HAL_Delay(10);
+	HAL_Delay(Main_Delay);
   }
   /* USER CODE END 3 */
 }
@@ -278,8 +287,8 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : BUTTON_Pin */
   GPIO_InitStruct.Pin = BUTTON_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(BUTTON_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : BLUE_LED_Pin */
@@ -292,8 +301,12 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin : PA10 */
   GPIO_InitStruct.Pin = GPIO_PIN_10;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
@@ -317,19 +330,21 @@ void Sensor_MPU6050_init()
 	HAL_I2C_Mem_Write(&hi2c2, MPU6050_ADDR, ACCEL_CONFIG_REG, 1, &regData, 1, i2c_timeout);
 
 	// Set flag interupt
-	regData = 0x10;
+	regData = 0x1;
 	HAL_I2C_Mem_Write(&hi2c2, MPU6050_ADDR, INT_ENABLE_REG, 1, &regData, 1, i2c_timeout);
+}
 
-	HAL_I2C_Mem_Read (&hi2c2, MPU6050_ADDR, INT_ENABLE_REG, 1, &regData, 1, i2c_timeout);
-	regData = 0x50;
-	HAL_I2C_Mem_Write(&hi2c2, MPU6050_ADDR, INT_PIN_REG, 1, &regData, 1, i2c_timeout);
-	regData = 0;
-	HAL_I2C_Mem_Read (&hi2c2, MPU6050_ADDR, INT_PIN_REG, 1, &regData, 1, i2c_timeout);
+void MPU6050_Read_Temp(void)
+{
+	uint8_t Rec_Data[2];
+	int16_t temp;
 
-	regData = 0x19;
-	HAL_I2C_Mem_Write(&hi2c2, MPU6050_ADDR, INT_ENABLE_REG, 1, &regData, 1, i2c_timeout);
-	regData = 0;
-	HAL_I2C_Mem_Read (&hi2c2, MPU6050_ADDR, INT_ENABLE_REG, 1, &regData, 1, i2c_timeout);
+	// Read 2 BYTES of data starting from TEMP_OUT_H_REG register
+
+	HAL_I2C_Mem_Read(&hi2c2, MPU6050_ADDR, TEMP_OUT_H_REG, 1, Rec_Data, 2, i2c_timeout);
+
+	temp = (int16_t)(Rec_Data[0] << 8 | Rec_Data[1]);
+	DataStruct_MPU6050.Temperature = (float)((int16_t)temp / (float)340.0 + (float)36.53);
 }
 
 void MPU6050_Read_All()
@@ -352,8 +367,29 @@ void MPU6050_Read_All()
 	DataStruct_MPU6050.Ax = DataStruct_MPU6050.Accel_X_RAW / 16384.0;
 	DataStruct_MPU6050.Ay = DataStruct_MPU6050.Accel_Y_RAW / 16384.0;
 	DataStruct_MPU6050.Az = DataStruct_MPU6050.Accel_Z_RAW / 14418.0;
-	HAL_I2C_Mem_Read(&hi2c2, MPU6050_ADDR, INT_STATUS_REG, 1, &regData, 1, i2c_timeout);
 
+	MPU6050_Read_Temp();
+	HAL_I2C_Mem_Read(&hi2c2, MPU6050_ADDR, 	INT_STATUS_REG, 1, &regData, 1, i2c_timeout);
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	switch(GPIO_Pin)
+	{
+		case GPIO_PIN_10:
+			__NOP();
+			break;
+
+		case BUTTON_Pin:
+			if(Main_Delay == 5)
+				Main_Delay = 50;
+			else
+				if(Main_Delay == 50)
+					Main_Delay = 250;
+				else
+					Main_Delay = 5;
+			break;
+	}
 }
 
 /* USER CODE END 4 */

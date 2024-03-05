@@ -74,13 +74,13 @@
   * @{
   */
 
- /** USB Device initialization function. */
- void MX_USB_DEVICE_Init(void);
+/** USB Device initialization function. */
+void MX_USB_Device_Init(void);
 
- /*
-  * -- Insert functions declaration here --
-  */
- /* USER CODE BEGIN FD */
+/*
+ * -- Insert functions declaration here --
+ */
+/* USER CODE BEGIN FD */
 
 /* USER CODE END FD */
 /**
