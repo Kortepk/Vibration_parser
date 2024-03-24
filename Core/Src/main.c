@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "usbd_cdc_if.h"
+extern USBD_HandleTypeDef hUsbDeviceFS;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -85,8 +86,8 @@ I2C_HandleTypeDef hi2c2;
 /* USER CODE BEGIN PV */
 uint8_t MainUsbTxBuffer[TX_USB_DATA_SIZE];
 
-uint8_t regData = 0;
-uint32_t i2c_timeout = 100, Main_Delay = 5;
+uint8_t regData = 0, Read_Data_Flag = 0;
+uint32_t i2c_timeout = 100, Main_Delay = 1000;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -142,7 +143,10 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   uint32_t time = HAL_GetTick(), sz;
-  static int val;
+
+  //sz = sprintf((char *)&MainUsbTxBuffer, "1)-1.0;1)0.0;1)1.0;");
+  for(uint16_t i = 0; i < 256; i++)
+	  MainUsbTxBuffer[i] = i;
 
   while (1)
   {
@@ -152,20 +156,28 @@ int main(void)
 	if(HAL_GetTick() > time)
 	{
 		HAL_GPIO_TogglePin(BLUE_LED_GPIO_Port, BLUE_LED_Pin);
-		time = HAL_GetTick() + 500;
+		time = HAL_GetTick() + Main_Delay;
 	}
-	MPU6050_Read_All();
 
+	if(Read_Data_Flag)
+	{
+		MPU6050_Read_All();
+		Read_Data_Flag = 0;
 
-	sz = sprintf((char *)&MainUsbTxBuffer, "X=%6.3f Y=%6.3f Z=%6.3f",
-			DataStruct_MPU6050.Ax,
-			DataStruct_MPU6050.Ay,
-			DataStruct_MPU6050.Az);
+		sz = sprintf((char *)&MainUsbTxBuffer, "1)%.3f;2)%.3f;3)%.3f;",
+									DataStruct_MPU6050.Ax,
+									DataStruct_MPU6050.Ay,
+									DataStruct_MPU6050.Az);
 
-	MainUsbTxBuffer[sz] = '\n';
-	sz +=2;
-	CDC_Transmit_FS(&MainUsbTxBuffer[0], sz);
-	HAL_Delay(Main_Delay);
+		CDC_Transmit_FS(&MainUsbTxBuffer[0], sz);
+	}
+
+	/* For speed test
+	while(USBD_OK != CDC_Transmit_FS(&MainUsbTxBuffer[0], 63)); // 7
+	HAL_GPIO_WritePin(BLUE_LED_GPIO_Port, BLUE_LED_Pin, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(BLUE_LED_GPIO_Port, BLUE_LED_Pin, GPIO_PIN_RESET);
+	*/
+
   }
   /* USER CODE END 3 */
 }
@@ -233,7 +245,7 @@ static void MX_I2C2_Init(void)
 
   /* USER CODE END I2C2_Init 1 */
   hi2c2.Instance = I2C2;
-  hi2c2.Init.Timing = 0x30A0A7FB;
+  hi2c2.Init.Timing = 0x00802172;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -259,6 +271,10 @@ static void MX_I2C2_Init(void)
   {
     Error_Handler();
   }
+
+  /** I2C Fast mode Plus enable
+  */
+  __HAL_SYSCFG_FASTMODEPLUS_ENABLE(I2C_FASTMODEPLUS_I2C2);
   /* USER CODE BEGIN I2C2_Init 2 */
 
   /* USER CODE END I2C2_Init 2 */
@@ -320,13 +336,14 @@ void Sensor_MPU6050_init()
 	regData = 0;
 	HAL_I2C_Mem_Write(&hi2c2, MPU6050_ADDR, PWR_MGMT_1_REG, 1, &regData, 1, i2c_timeout);
 
-	// Set DATA RATE of 1KHz by writing SMPLRT_DIV register
-	regData = 0x07;
+	// Set DATA RATE of 4KHz by writing SMPLRT_DIV register
+	// 4kHz - only 3-axis Data, 3 kHz - + temp
+	regData = 0x01; // 0x07.
 	HAL_I2C_Mem_Write(&hi2c2, MPU6050_ADDR, SMPLRT_DIV_REG, 1, &regData, 1, i2c_timeout);
 
 	// Set accelerometer configuration in ACCEL_CONFIG Register
 	// XA_ST=0,YA_ST=0,ZA_ST=0, FS_SEL=0 -> � 2g
-	regData = 0x00;
+	regData = 0x68;
 	HAL_I2C_Mem_Write(&hi2c2, MPU6050_ADDR, ACCEL_CONFIG_REG, 1, &regData, 1, i2c_timeout);
 
 	// Set flag interupt
@@ -353,7 +370,13 @@ void MPU6050_Read_All()
 
 	// Read 6 BYTES of data starting from ACCEL_XOUT_H register
 
-	HAL_I2C_Mem_Read(&hi2c2, MPU6050_ADDR, ACCEL_XOUT_H_REG, 1, Rec_Data, 6, i2c_timeout);
+	volatile HAL_StatusTypeDef tst = HAL_I2C_Mem_Read(&hi2c2, MPU6050_ADDR, ACCEL_XOUT_H_REG, 1, Rec_Data, 6, i2c_timeout);
+
+	if(tst == HAL_ERROR) // An error may occur over time. That solves it.
+	{
+		HAL_I2C_DeInit(&hi2c2);
+		MX_I2C2_Init();
+	}
 
 	DataStruct_MPU6050.Accel_X_RAW = (int16_t)(Rec_Data[0] << 8 | Rec_Data[1]);
 	DataStruct_MPU6050.Accel_Y_RAW = (int16_t)(Rec_Data[2] << 8 | Rec_Data[3]);
@@ -368,8 +391,8 @@ void MPU6050_Read_All()
 	DataStruct_MPU6050.Ay = DataStruct_MPU6050.Accel_Y_RAW / 16384.0;
 	DataStruct_MPU6050.Az = DataStruct_MPU6050.Accel_Z_RAW / 14418.0;
 
-	MPU6050_Read_Temp();
-	HAL_I2C_Mem_Read(&hi2c2, MPU6050_ADDR, 	INT_STATUS_REG, 1, &regData, 1, i2c_timeout);
+	//MPU6050_Read_Temp();
+	//HAL_I2C_Mem_Read(&hi2c2, MPU6050_ADDR, 	INT_STATUS_REG, 1, &regData, 1, i2c_timeout);
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
@@ -377,7 +400,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 	switch(GPIO_Pin)
 	{
 		case GPIO_PIN_10:
-			__NOP();
+			Read_Data_Flag = 1;
 			break;
 
 		case BUTTON_Pin:
@@ -387,7 +410,10 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 				if(Main_Delay == 50)
 					Main_Delay = 250;
 				else
-					Main_Delay = 5;
+					if(Main_Delay == 250)
+						Main_Delay = 1000;
+					else
+						Main_Delay = 5;
 			break;
 	}
 }
