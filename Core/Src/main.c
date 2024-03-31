@@ -81,6 +81,8 @@ struct MPU6050_t
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
 I2C_HandleTypeDef hi2c2;
 
 /* USER CODE BEGIN PV */
@@ -88,12 +90,16 @@ uint8_t MainUsbTxBuffer[TX_USB_DATA_SIZE];
 
 uint8_t regData = 0, Read_Data_Flag = 0;
 uint32_t i2c_timeout = 100, Main_Delay = 1000;
+uint32_t ADC_Value; // 12-bit resolution
+float ADC_Fl;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C2_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 void Sensor_MPU6050_init(void);
 void MPU6050_Read_All(void);
@@ -134,9 +140,15 @@ int main(void)
   MX_GPIO_Init();
   MX_USB_Device_Init();
   MX_I2C2_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
+#ifdef MPU6050
   HAL_I2C_Mem_Read (&hi2c2, MPU6050_ADDR, WHO_AM_I_REG, 1, &regData, 1, i2c_timeout);
   Sensor_MPU6050_init();
+#else
+  //HAL_ADCEx_Calibration_Start(&hadc1);
+  HAL_ADC_Start_IT(&hadc1);
+#endif
 
   /* USER CODE END 2 */
 
@@ -145,20 +157,22 @@ int main(void)
   uint32_t time = HAL_GetTick(), sz;
 
   //sz = sprintf((char *)&MainUsbTxBuffer, "1)-1.0;1)0.0;1)1.0;");
-  for(uint16_t i = 0; i < 256; i++)
-	  MainUsbTxBuffer[i] = i;
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
 
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+
 	if(HAL_GetTick() > time)
 	{
 		HAL_GPIO_TogglePin(BLUE_LED_GPIO_Port, BLUE_LED_Pin);
 		time = HAL_GetTick() + Main_Delay;
 	}
 
+#ifdef MPU6050
 	if(Read_Data_Flag)
 	{
 		MPU6050_Read_All();
@@ -177,6 +191,17 @@ int main(void)
 	HAL_GPIO_WritePin(BLUE_LED_GPIO_Port, BLUE_LED_Pin, GPIO_PIN_SET);
 	HAL_GPIO_WritePin(BLUE_LED_GPIO_Port, BLUE_LED_Pin, GPIO_PIN_RESET);
 	*/
+#else
+	if (hcdc->TxState == 0)
+	{
+		ADC_Fl = ADC_Value * 3.3f / (4095 * 1 ); // 4095 - 12 bit; 16 - oversampling
+
+		sz = sprintf((char *)&MainUsbTxBuffer, "1)%.3f;", ADC_Fl);
+		CDC_Transmit_FS(&MainUsbTxBuffer[0], sz);
+		HAL_ADC_Start_IT(&hadc1);
+	}
+	//HAL_Delay(1);
+#endif
 
   }
   /* USER CODE END 3 */
@@ -227,6 +252,78 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_MultiModeTypeDef multimode = {0};
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Common config
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.GainCompensation = 0;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.LowPowerAutoWait = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.Overrun = ADC_OVR_DATA_OVERWRITTEN;
+  hadc1.Init.OversamplingMode = ENABLE;
+  hadc1.Init.Oversampling.Ratio = ADC_OVERSAMPLING_RATIO_16;
+  hadc1.Init.Oversampling.RightBitShift = ADC_RIGHTBITSHIFT_NONE;
+  hadc1.Init.Oversampling.TriggeredMode = ADC_TRIGGEREDMODE_SINGLE_TRIGGER;
+  hadc1.Init.Oversampling.OversamplingStopReset = ADC_REGOVERSAMPLING_CONTINUED_MODE;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure the ADC multi-mode
+  */
+  multimode.Mode = ADC_MODE_INDEPENDENT;
+  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
+  sConfig.SingleDiff = ADC_SINGLE_ENDED;
+  sConfig.OffsetNumber = ADC_OFFSET_NONE;
+  sConfig.Offset = 0;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -416,6 +513,14 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 						Main_Delay = 5;
 			break;
 	}
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+    if(hadc->Instance == ADC1) //check if the interrupt comes from ACD1
+    {
+        ADC_Value = HAL_ADC_GetValue(&hadc1);
+    }
 }
 
 /* USER CODE END 4 */
